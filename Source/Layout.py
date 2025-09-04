@@ -1,3 +1,11 @@
+"""
+ONNX-based layout detection for document image analysis.
+
+This module provides the LayoutDetection class for performing inference using
+pre-trained ONNX models to detect layout elements in document images. Supports
+real-time prediction with configurable thresholds and visualization capabilities.
+"""
+
 import os
 import cv2
 import json
@@ -8,19 +16,43 @@ from Source.Utils import optimize_countour
 
 class LayoutDetection:
     """
-    Handles layout detection
-    Args:
-        - config_file: json file with the following parameters:
-            - onnx model file
-            - image input width and height
-            - classes
-
+    ONNX-based layout detection engine for document image analysis.
+    
+    This class provides real-time layout detection capabilities using pre-trained
+    ONNX models. It can detect various document elements such as text lines, images,
+    margins, and captions in document images with configurable detection thresholds.
+    
+    The class supports both CPU and GPU execution providers and includes visualization
+    capabilities for debugging and result inspection.
+    
+    Attributes:
+        _config_file (str): Path to the model configuration JSON file
+        _onnx_model_file (str): Path to the ONNX model file
+        _input_width (int): Expected input image width
+        _input_height (int): Expected input image height
+        _class_dict (dict): Dictionary mapping class names to colors
+        _can_run (bool): Whether the model is properly initialized
+        _inference: ONNX Runtime inference session
+        execution_providers (list): Available execution providers for ONNX Runtime
     """
-
+    
     def __init__(
         self,
         config_file: str,
     ) -> None:
+        """
+        Initialize the layout detection engine.
+        
+        Loads the model configuration and initializes the ONNX Runtime session
+        with appropriate execution providers (CPU/CUDA).
+        
+        Args:
+            config_file (str): Path to JSON configuration file containing:
+                - model: Path to ONNX model file
+                - input_width: Expected input image width
+                - input_height: Expected input image height
+                - classes: Dictionary mapping class names to colors
+        """
         self._config_file = config_file
         self._onnx_model_file = None
         self._input_width = 1024
@@ -28,22 +60,33 @@ class LayoutDetection:
         self._class_dict = None
         self._can_run = False
         self._inference = None
-        # add other Execution Providers if applicable, see: https://onnxruntime.ai/docs/execution-providers
+        
+        # Add execution providers (CUDA first for GPU acceleration if available)
         self.execution_providers = ["CPUExecutionProvider", "CUDAExecutionProvider"]
 
         self._init()
 
     def _init(self) -> None:
+        """
+        Initialize the ONNX model and configuration from the config file.
+        
+        Loads the JSON configuration, extracts model parameters, and creates
+        the ONNX Runtime inference session. Sets _can_run flag based on success.
+        """
         _file = open(self._config_file)
         json_content = json.loads(_file.read())
+        
+        # Extract configuration parameters
         self._onnx_model_file = json_content["model"]
         self._input_width = json_content["input_width"]
         self._input_height = json_content["input_height"]
         self._class_dict = json_content["classes"]
 
         if self._onnx_model_file is not None:
+            # Construct full path to model file
             model_file_path = f"{os.path.dirname(self._config_file)}/{self._onnx_model_file}"
             try:
+                # Initialize ONNX Runtime session
                 self._inference = ort.InferenceSession(
                     model_file_path, providers=self.execution_providers
                 )
@@ -58,33 +101,61 @@ class LayoutDetection:
         print(f"Layout Inference -> Init(): {self.can_run}")
 
     def prepare_img_patches(self, image: np.array) -> np.array:
+        """
+        Preprocess image patches for model inference.
+        
+        Converts color images to the format expected by the segmentation model:
+        grayscale, normalized, and converted to 3-channel format.
+        
+        Args:
+            image (np.array): Input image patch
+            
+        Returns:
+            np.array: Preprocessed image ready for inference
+        """
+        # Convert to grayscale
         image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         image = image.astype(np.float32)
-        image /= 255.0
+        image /= 255.0  # Normalize to [0, 1]
+        # Convert to 3-channel format (many models expect 3 channels)
         image = np.dstack([image, image, image])
         return image
 
     def get_contours(
         self, prediction: np.array, optimize: bool = True, return_bbox: bool = False
     ) -> list:
+        """
+        Extract contours from prediction masks.
+        
+        Processes prediction masks to extract contours representing detected
+        layout elements. Optionally optimizes contours to reduce point count.
+        
+        Args:
+            prediction (np.array): Binary prediction mask
+            optimize (bool, optional): Whether to optimize contours. Defaults to True.
+            return_bbox (bool, optional): Whether to return bounding boxes. Defaults to False.
+            
+        Returns:
+            list: List of contours or bounding boxes for detected elements
+        """
+        # Threshold prediction to binary mask
         prediction = np.where(prediction > 200, 255, 0)
         prediction = prediction.astype(np.uint8)
 
         if np.sum(prediction) > 0:
+            # Find contours in the binary mask
             contours, _ = cv2.findContours(
                 prediction, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE
             )
 
             if return_bbox:
-                # TODO: implement this function
+                # TODO: implement bounding box extraction
                 pass
-
             elif optimize:
+                # Optimize contours to reduce point count
                 contours = [optimize_countour(x) for x in contours]
-
             else:
                 return contours
-
         else:
             return []
 
@@ -209,31 +280,73 @@ class LayoutDetection:
         return image
 
     def _predict(self, img_patches: np.array, class_threshold: float) -> np.array:
+        """
+        Perform model inference on image patches.
+        
+        Runs the ONNX model on preprocessed image patches and returns
+        thresholded predictions for each class.
+        
+        Args:
+            img_patches (np.array): Preprocessed image patches
+            class_threshold (float): Threshold for positive class predictions
+            
+        Returns:
+            np.array: Thresholded predictions with shape (H, W, num_classes)
+        """
+        # Preprocess image patches
         img_batch = [self.prepare_img_patches(x) for x in img_patches]
         img_batch = np.array(img_batch)
-        img_bach = np.transpose(img_batch, axes=[0, 3, 1, 2])
-        #img_batch = np.expand_dims(img_batch, axis=1)
+        img_bach = np.transpose(img_batch, axes=[0, 3, 1, 2])  # BHWC -> BCHW
         print(f"Input: {img_batch.shape}")
+        
+        # Run inference
         img_bach = ort.OrtValue.ortvalue_from_numpy(img_bach)
         pred_batch = self._inference.run(None, {"input": img_batch})
         pred_batch = pred_batch[0].numpy()
         print(f"Predictions: {pred_batch.shape}")
+        
+        # Post-process predictions
         predictions = np.squeeze(predictions[0], axis=0)
-        predictions = softmax(predictions, axis=0)
-        predictions = np.transpose(predictions, axes=[1, 2, 0])
+        predictions = softmax(predictions, axis=0)  # Apply softmax
+        predictions = np.transpose(predictions, axes=[1, 2, 0])  # CHW -> HWC
 
-        predictions = predictions[:, :, 1:]  # removes the background class
-        predictions = np.where(predictions > class_threshold, 1.0, 0)
-        predictions *= 255
+        predictions = predictions[:, :, 1:]  # Remove background class
+        predictions = np.where(predictions > class_threshold, 1.0, 0)  # Threshold
+        predictions *= 255  # Scale to 0-255 range
 
         predictions = predictions.astype(np.uint8)
-
         return predictions
 
     def run(self, img_patches, class_threshold: float = 0.6) -> np.array:
+        """
+        Run layout detection on image patches.
+        
+        Main inference method that processes image patches and returns
+        layout element predictions.
+        
+        Args:
+            img_patches: Input image patches for processing
+            class_threshold (float, optional): Detection threshold. Defaults to 0.6.
+            
+        Returns:
+            np.array: Layout element predictions
+        """
         return self._predict(img_patches, class_threshold)
 
     def run_debug(self, img, class_threshold: float = 0.6):
+        """
+        Run layout detection with visualization for debugging.
+        
+        Performs layout detection and generates a preview image with
+        detected elements overlaid for visual inspection.
+        
+        Args:
+            img: Input image for analysis
+            class_threshold (float, optional): Detection threshold. Defaults to 0.6.
+            
+        Returns:
+            tuple: (predictions, preview_image) for analysis and visualization
+        """
         predictions = self._predict(img, class_threshold)
         preview_img = self.generate_page_data(img, predictions)
 
