@@ -2,6 +2,8 @@
 
 A comprehensive pipeline for training and deploying binary and multi-class image segmentation networks, specifically designed for document layout analysis tasks.
 
+Code by Eric Werner in 2024, for the Buddhist Digital Resource Center.
+
 ## Overview
 
 This project provides a complete framework for semantic segmentation of document images, enabling the identification and classification of different document elements such as text regions, images, margins, captions, headers, footers, and lines. The pipeline supports both binary segmentation (foreground/background) and multi-class segmentation for detailed document layout analysis.
